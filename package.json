@@ -1,0 +1,58 @@
+{
+  "name": "three-sdf-geometry-generator",
+  "version": "1.2.0",
+  "description": "Generate three.js BufferGeometry from signed distance functions (SDFs) on the GPU with WebGPURenderer and TSL.",
+  "type": "module",
+  "main": "./src/SDFGeometryGenerator.js",
+  "types": "./types/SDFGeometryGenerator.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/SDFGeometryGenerator.d.ts",
+      "default": "./src/SDFGeometryGenerator.js"
+    },
+    "./examples/*": "./examples/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "types",
+    "examples",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "test:types": "tsc -p test/types",
+    "example": "npx --yes serve -l 8080 ."
+  },
+  "peerDependencies": {
+    "three": ">=0.175.0",
+    "@types/three": ">=0.183.0"
+  },
+  "peerDependenciesMeta": {
+    "@types/three": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/three": "0.186.0",
+    "three": "0.186.1",
+    "typescript": "7.0.2",
+    "webgpu": "0.6.2"
+  },
+  "keywords": [
+    "three",
+    "threejs",
+    "three.js",
+    "webgpu",
+    "tsl",
+    "sdf",
+    "signed-distance-function",
+    "isosurface",
+    "surface-nets",
+    "geometry",
+    "mesh",
+    "procedural"
+  ],
+  "license": "MIT"
+}

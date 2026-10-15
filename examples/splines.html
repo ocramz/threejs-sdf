@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>three-sdf-geometry-generator: splines</title>
+	<style>
+		html, body { margin: 0; height: 100%; overflow: hidden; background: #15171c; color: #dde1e8; font: 13px/1.45 system-ui, sans-serif; }
+		#info { position: absolute; left: 12px; bottom: 12px; padding: 8px 10px; border-radius: 6px; background: rgba( 0, 0, 0, 0.55 ); white-space: pre; pointer-events: none; }
+		nav { position: absolute; left: 12px; top: 12px; }
+		nav a { color: #9cc8ff; }
+	</style>
+	<script type="importmap">
+		{
+			"imports": {
+				"three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+				"three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+				"three/tsl": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.tsl.js",
+				"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+				"three-sdf-geometry-generator": "../src/SDFGeometryGenerator.js"
+			}
+		}
+	</script>
+</head>
+<body>
+	<nav><a href="./index.html">← Shapes</a></nav>
+	<div id="info">Initializing…</div>
+
+	<script type="module">
+
+		import * as THREE from 'three/webgpu';
+		import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+		import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+		import { SDFGeometryGenerator } from 'three-sdf-geometry-generator';
+		import { splineDistance } from './splineDistance.js';
+		import { splineDistanceStorage } from './splineDistanceStorage.js';
+		import { splinePresets } from './splinePresets.js';
+
+		const info = document.getElementById( 'info' );
+
+		const renderer = new THREE.WebGPURenderer( { antialias: true } );
+		renderer.setPixelRatio( window.devicePixelRatio );
+		renderer.setSize( window.innerWidth, window.innerHeight );
+		document.body.appendChild( renderer.domElement );
+		await renderer.init();
+
+		const scene = new THREE.Scene();
+		scene.background = new THREE.Color( 0x15171c );
+		scene.add( new THREE.HemisphereLight( 0xdde6ff, 0x3a3026, 1.4 ) );
+
+		const sun = new THREE.DirectionalLight( 0xffffff, 2.5 );
+		sun.position.set( 2, 3, 2 );
+		scene.add( sun );
+
+		const camera = new THREE.PerspectiveCamera( 40, window.innerWidth / window.innerHeight, 0.01, 100 );
+		camera.position.set( 1.9, 0.9, 2.2 );
+
+		const controls = new OrbitControls( camera, renderer.domElement );
+		controls.enableDamping = true;
+
+		const material = new THREE.MeshStandardNodeMaterial( { color: 0xd9a066, roughness: 0.45, metalness: 0.1 } );
+		const mesh = new THREE.Mesh( new THREE.BufferGeometry(), material );
+		scene.add( mesh );
+
+		// The source curves, drawn on top of the mesh when "showCurves" is on.
+
+		const curveMaterial = new THREE.LineBasicNodeMaterial( { color: 0x66ccff, depthTest: false } );
+		const curveLines = new THREE.Group();
+		curveLines.renderOrder = 1;
+		scene.add( curveLines );
+
+		const generator = new SDFGeometryGenerator( renderer );
+
+		const params = {
+			preset: 'Braid',
+			resolution: 128,
+			radiusScale: 1,
+			blend: 0.12,
+			detail: 1, // multiplies the preset's segments per curve
+			showCurves: false,
+			wireframe: false
+		};
+
+		let preset = null;
+
+		function loadPreset() {
+
+			preset = splinePresets[ params.preset ]();
+			params.blend = preset.blend;
+			params.detail = 1;
+			gui.controllersRecursive().forEach( ( controller ) => controller.updateDisplay() );
+
+			curveLines.children.forEach( ( line ) => line.geometry.dispose() );
+			curveLines.clear();
+
+			for ( const curve of preset.curves ) {
+
+				const geometry = new THREE.BufferGeometry().setFromPoints( curve.getPoints( Math.min( 4000, Math.max( 200, preset.segments ) ) ) );
+				curveLines.add( new THREE.Line( geometry, curveMaterial ) );
+
+			}
+
+			rebuild();
+
+		}
+
+		let job = 0;
+
+		async function rebuild() {
+
+			const id = ++ job;
+			const { curves, radius, storage, margin } = preset;
+			const scale = params.radiusScale;
+
+			if ( storage && renderer.backend.isWebGPUBackend !== true ) {
+
+				info.textContent = 'This preset uses storage buffers, which need the WebGPU backend.';
+				return;
+
+			}
+
+			const options = {
+				radius: typeof radius === 'function' ? ( u, i ) => scale * radius( u, i ) : scale * radius,
+				segments: Math.max( 1, Math.round( preset.segments * params.detail ) ),
+				blend: params.blend,
+				margin
+			};
+
+			info.textContent = 'Generating…';
+			const start = performance.now();
+			let sdf = null;
+
+			try {
+
+				sdf = storage ? splineDistanceStorage( curves, options ) : splineDistance( curves, options );
+
+				const geometry = await generator.generate( params.resolution, sdf, 1 );
+
+				if ( id !== job ) { // a newer request finished first
+
+					geometry.dispose();
+					return;
+
+				}
+
+				mesh.geometry.dispose();
+				mesh.geometry = geometry;
+
+				const points = curves.length * ( options.segments + 1 );
+				const data = storage ?
+					`${ points.toLocaleString() } points in storage buffers (${ ( sdf.info.bytes / 1024 ).toFixed( 0 ) } kB)\n` +
+					`grid ${ sdf.info.gridCells.join( '×' ) }, at most ${ sdf.info.maxSegmentsPerCell } of ${ sdf.info.segments.toLocaleString() } segments per sample` :
+					`${ points.toLocaleString() } of 4096 points in a uniform buffer`;
+
+				info.textContent = `${ curves.length } curves, ${ data }\n` +
+					`${ ( geometry.index.count / 3 ).toLocaleString() } triangles\n` +
+					`${ ( performance.now() - start ).toFixed( 0 ) } ms, ${ renderer.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL 2' } backend`;
+
+			} catch ( error ) {
+
+				if ( id === job ) info.textContent = error.message;
+
+			} finally {
+
+				if ( sdf && sdf.dispose ) sdf.dispose( renderer ); // storage buffers are only needed during generation
+
+			}
+
+		}
+
+		function updateVisibility() {
+
+			curveLines.visible = params.showCurves;
+			material.transparent = params.showCurves;
+			material.opacity = params.showCurves ? 0.35 : 1;
+			material.depthWrite = ! params.showCurves;
+			material.wireframe = params.wireframe;
+			material.needsUpdate = true;
+
+		}
+
+		const gui = new GUI();
+		gui.add( params, 'preset', Object.keys( splinePresets ) ).onChange( loadPreset );
+		gui.add( params, 'resolution', [ 64, 96, 128, 160, 192 ] ).onChange( rebuild );
+		gui.add( params, 'radiusScale', 0.5, 2, 0.05 ).onFinishChange( rebuild );
+		gui.add( params, 'blend', 0, 0.25, 0.01 ).onFinishChange( rebuild );
+		gui.add( params, 'detail', 0.25, 2, 0.25 ).onFinishChange( rebuild );
+		gui.add( params, 'showCurves' ).onChange( updateVisibility );
+		gui.add( params, 'wireframe' ).onChange( updateVisibility );
+
+		window.addEventListener( 'resize', () => {
+
+			camera.aspect = window.innerWidth / window.innerHeight;
+			camera.updateProjectionMatrix();
+			renderer.setSize( window.innerWidth, window.innerHeight );
+
+		} );
+
+		renderer.setAnimationLoop( () => {
+
+			controls.update();
+			renderer.render( scene, camera );
+
+		} );
+
+		updateVisibility();
+		loadPreset();
+
+	</script>
+</body>
+</html>

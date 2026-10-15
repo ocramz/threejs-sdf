@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>three-sdf-geometry-generator</title>
+	<style>
+		html, body { margin: 0; height: 100%; overflow: hidden; background: #15171c; color: #dde1e8; font: 13px/1.45 system-ui, sans-serif; }
+		#info { position: absolute; left: 12px; bottom: 12px; padding: 8px 10px; border-radius: 6px; background: rgba( 0, 0, 0, 0.55 ); white-space: pre; pointer-events: none; }
+		nav { position: absolute; left: 12px; top: 12px; }
+		nav a { color: #9cc8ff; }
+	</style>
+	<script type="importmap">
+		{
+			"imports": {
+				"three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+				"three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+				"three/tsl": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.tsl.js",
+				"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+				"three-sdf-geometry-generator": "../src/SDFGeometryGenerator.js"
+			}
+		}
+	</script>
+</head>
+<body>
+	<nav><a href="./splines.html">Splines →</a></nav>
+	<div id="info">Initializing…</div>
+
+	<script type="module">
+
+		import * as THREE from 'three/webgpu';
+		import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+		import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+		import { SDFGeometryGenerator } from 'three-sdf-geometry-generator';
+		import { shapes } from './shapes.js';
+
+		const info = document.getElementById( 'info' );
+
+		const renderer = new THREE.WebGPURenderer( { antialias: true } );
+		renderer.setPixelRatio( window.devicePixelRatio );
+		renderer.setSize( window.innerWidth, window.innerHeight );
+		document.body.appendChild( renderer.domElement );
+		await renderer.init();
+
+		const scene = new THREE.Scene();
+		scene.background = new THREE.Color( 0x15171c );
+		scene.add( new THREE.HemisphereLight( 0xdde6ff, 0x3a3026, 1.4 ) );
+
+		const sun = new THREE.DirectionalLight( 0xffffff, 2.5 );
+		sun.position.set( 2, 3, 2 );
+		scene.add( sun );
+
+		const camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 0.01, 100 );
+		camera.position.set( 1.7, 1.2, 2.3 );
+
+		const controls = new OrbitControls( camera, renderer.domElement );
+		controls.enableDamping = true;
+
+		const material = new THREE.MeshStandardNodeMaterial( { color: 0xd9a066, roughness: 0.45, metalness: 0.1 } );
+		const mesh = new THREE.Mesh( new THREE.BufferGeometry(), material );
+		scene.add( mesh );
+
+		const generator = new SDFGeometryGenerator( renderer );
+		const params = { shape: 'Torus', resolution: 128, wireframe: false, flatShading: false };
+
+		let job = 0;
+
+		async function rebuild() {
+
+			const id = ++ job;
+			const { sdf, bounds } = shapes[ params.shape ];
+
+			info.textContent = 'Generating…';
+			const start = performance.now();
+
+			try {
+
+				const geometry = await generator.generate( params.resolution, sdf, bounds );
+
+				if ( id !== job ) { // a newer request finished first
+
+					geometry.dispose();
+					return;
+
+				}
+
+				mesh.geometry.dispose();
+				mesh.geometry = geometry;
+
+				const backend = renderer.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL 2';
+				info.textContent = `${ ( geometry.index.count / 3 ).toLocaleString() } triangles, ${ geometry.attributes.position.count.toLocaleString() } vertices\n` +
+					`${ ( performance.now() - start ).toFixed( 0 ) } ms, ${ backend } backend`;
+
+			} catch ( error ) {
+
+				if ( id === job ) info.textContent = error.message;
+
+			}
+
+		}
+
+		const gui = new GUI();
+		gui.add( params, 'shape', Object.keys( shapes ) ).onChange( rebuild );
+		gui.add( params, 'resolution', [ 32, 64, 96, 128, 192, 256 ] ).onChange( rebuild );
+		gui.add( params, 'wireframe' ).onChange( ( value ) => material.wireframe = value );
+		gui.add( params, 'flatShading' ).onChange( ( value ) => {
+
+			material.flatShading = value;
+			material.needsUpdate = true;
+
+		} );
+
+		window.addEventListener( 'resize', () => {
+
+			camera.aspect = window.innerWidth / window.innerHeight;
+			camera.updateProjectionMatrix();
+			renderer.setSize( window.innerWidth, window.innerHeight );
+
+		} );
+
+		renderer.setAnimationLoop( () => {
+
+			controls.update();
+			renderer.render( scene, camera );
+
+		} );
+
+		rebuild();
+
+	</script>
+</body>
+</html>
