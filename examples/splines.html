@@ -59,7 +59,11 @@
 		controls.enableDamping = true;
 
 		const material = new THREE.MeshStandardNodeMaterial( { color: 0xd9a066, roughness: 0.45, metalness: 0.1 } );
+		// Hidden until the first geometry arrives: rendering the empty placeholder would
+		// build the WebGPU pipeline without a position attribute, and it isn't rebuilt
+		// when the geometry is swapped, so the mesh would stay invisible.
 		const mesh = new THREE.Mesh( new THREE.BufferGeometry(), material );
+		mesh.visible = false;
 		scene.add( mesh );
 
 		// The source curves, drawn on top of the mesh when "showCurves" is on.
@@ -145,6 +149,7 @@
 
 				mesh.geometry.dispose();
 				mesh.geometry = geometry;
+				mesh.visible = true;
 
 				const points = curves.length * ( options.segments + 1 );
 				const data = storage ?
