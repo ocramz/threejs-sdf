@@ -1,5 +1,11 @@
 # three-sdf-geometry-generator
 
+<p>
+<center>
+<img src="examples/renders/sheet-gpu-splines.png" />
+</center>
+</p>
+
 Generate a three.js `BufferGeometry` from a signed distance function (SDF), evaluated on the GPU with `WebGPURenderer` and TSL.
 
 This is a port of the `SDFGeometryGenerator` addon from three.js [PR #26837](https://github.com/mrdoob/three.js/pull/26837), which was later removed from three.js and only ever worked with `WebGLRenderer`. The distance field is sampled by a TSL compute shader, read back from the GPU, and turned into a mesh with Surface Nets.
