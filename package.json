@@ -1,7 +1,7 @@
 {
   "name": "three-sdf-geometry-generator",
-  "version": "1.2.0",
-  "description": "Generate three.js BufferGeometry from signed distance functions (SDFs) on the GPU with WebGPURenderer and TSL.",
+  "version": "1.3.0",
+  "description": "Generate three.js BufferGeometry from signed distance functions (SDFs) and level sets of scalar fields on the GPU with WebGPURenderer and TSL.",
   "type": "module",
   "main": "./src/SDFGeometryGenerator.js",
   "types": "./types/SDFGeometryGenerator.d.ts",
@@ -49,6 +49,8 @@
     "sdf",
     "signed-distance-function",
     "isosurface",
+    "level-set",
+    "density",
     "surface-nets",
     "geometry",
     "mesh",
