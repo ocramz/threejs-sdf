@@ -6,7 +6,7 @@
 </center>
 </p>
 
-Generate a three.js `BufferGeometry` from a signed distance function (SDF), evaluated on the GPU with `WebGPURenderer` and TSL.
+Generate a three.js `BufferGeometry` from a signed distance function (SDF), or from a level set of any scalar field such as a density, evaluated on the GPU with `WebGPURenderer` and TSL.
 
 This is a port of the `SDFGeometryGenerator` addon from three.js [PR #26837](https://github.com/mrdoob/three.js/pull/26837), which was later removed from three.js and only ever worked with `WebGLRenderer`. The distance field is sampled by a TSL compute shader, read back from the GPU, and turned into a mesh with Surface Nets.
 
@@ -64,13 +64,15 @@ Avoid CDNs that rewrite imports (such as esm.sh) unless three.js comes from the 
 
 `renderer` must be a `WebGPURenderer` from `three/webgpu`. Both its WebGPU backend and its WebGL 2 fallback are supported for TSL distance functions.
 
-### `generator.generate( res = 64, distFunc = sphere, bounds = 1 ) → Promise<BufferGeometry>`
+### `generator.generate( res = 64, distFunc = sphere, bounds = 1, options = {} ) → Promise<BufferGeometry>`
 
-Samples `distFunc` on a grid of `res × res × res` cells covering the cube `[-bounds, bounds]³` and returns the zero-level surface.
+Samples `distFunc` on a grid of `res × res × res` cells covering the cube `[-bounds, bounds]³` and returns the surface where it equals `options.level`: by default, the zero level of a signed distance function.
 
 - `res` is the number of cells per axis, any integer ≥ 2.
 - `distFunc` is a TSL function or a WGSL string (see below). The default is a sphere of radius 0.5.
 - `bounds` is the half-extent of the sampled cube, centered at the origin.
+- `options.level` is the field value on the surface. The default is `0`.
+- `options.inside` says which side of the level is inside: `'below'` (the default) for signed distances, `'above'` for densities. See [Level sets and density fields](#level-sets-and-density-fields).
 
 The result is an indexed geometry with `position` and `normal` attributes. Normals come from the SDF gradient, so there's no need to call `computeVertexNormals()`. Indices are 16-bit when possible and 32-bit otherwise.
 
@@ -97,7 +99,7 @@ const roundedBox = Fn( ( [ p ] ) => {
 } );
 ```
 
-**WGSL** works only on the WebGPU backend. The string must define `fn dist( p: vec3<f32> ) -> f32`. Helper functions can appear in any order:
+**WGSL** works only on the WebGPU backend. The string must define `fn dist( p: vec3<f32> ) -> f32`, or `fn field( p: vec3<f32> ) -> f32` if the name `dist` doesn't fit (`dist` wins if both are defined). Helper functions can appear in any order:
 
 ```js
 const geometry = await generator.generate( 128, /* wgsl */`
@@ -105,6 +107,22 @@ const geometry = await generator.generate( 128, /* wgsl */`
   fn sphere( p: vec3<f32>, r: f32 ) -> f32 { return length( p ) - r; }
 `, 1 );
 ```
+
+## Level sets and density fields
+
+The field doesn't have to be a distance. Any scalar field works, and the `level` and `inside` options pick which of its level sets becomes the surface. For a density, where the shape is the region of high values, pass `inside: 'above'`:
+
+```js
+import { dot, exp } from 'three/tsl';
+
+const blob = ( p ) => exp( dot( p, p ).mul( - 5 ) ); // a Gaussian, 1 at the origin
+
+const geometry = await generator.generate( 128, blob, 1, { level: 0.5, inside: 'above' } );
+```
+
+The generator samples `field − level`, or `level − field` when `inside` is `'above'`, and meshes where that crosses zero. Everything else works as it does for distance functions: normals come from the field's gradient and point outward, and regions cut off by `bounds` are capped. Calling `generate()` again with another `level` gives the next nested shell of the same field. Each call samples the field again.
+
+Vertices are placed by linear interpolation between neighbouring samples. That's exact for a field that varies linearly across a cell, as a distance function does near its surface. Densities often don't: a narrow Gaussian changes steeply. If the surface looks bumpy or faceted, raise `res` until each feature spans several cells.
 
 ## Example: tubes around splines
 
@@ -154,6 +172,27 @@ Beyond `margin`, the field is clamped. That doesn't change the surface as long a
 
 This example needs the WebGPU backend: the WebGL 2 fallback can't read storage buffers at arbitrary positions. Tubes thinner than about 1.5 cells come out less accurate, as with any Surface Nets mesh, so raise `res` for fine wire. The demo page has two large presets: a yarn ball (180 curves, about 8,800 points) and a toroidal coil (one curve, 6,000 segments).
 
+## Example: point densities
+
+`examples/pointDensity.js` turns a set of points into a density field: one Gaussian kernel per point, each peaking at 1, all summed. Where kernels overlap they fuse smoothly, so a few points give metaballs and a point cloud gives a kernel density estimate:
+
+```js
+import { Vector3 } from 'three/webgpu';
+import { pointDensity } from 'three-sdf-geometry-generator/examples/pointDensity.js';
+
+const points = [ new Vector3( - 0.3, 0, 0 ), new Vector3( 0.25, 0.1, 0 ), new Vector3( 0, - 0.3, 0.1 ) ];
+
+const density = pointDensity( points, {
+  radius: 0.15 // the kernel's standard deviation, or ( point, index ) => radius
+} );
+
+const geometry = await generator.generate( 128, density, 1, { level: 0.5, inside: 'above' } );
+```
+
+An isolated point gives a sphere of radius `radius × √(−2 ln level)`, about 1.18 × `radius` at level 0.5. The points are uploaded as a uniform array, so at most 4096 fit. Every sample sums all the kernels, so the cost grows with `res³ × points`.
+
+`examples/density.html` is an interactive demo with a level slider and three presets: metaballs, a spiral galaxy made of 960 points, and the probability density of a hydrogen 3d orbital. At low levels the orbital is two lobes and a torus; above 0.25 the torus disappears.
+
 ## Migrating from the WebGL addon
 
 The API is the same, with two changes. `generate()` returns a Promise, because GPU readback is asynchronous in WebGPU. And GLSL distance functions must be ported to TSL or WGSL; passing a GLSL string throws an error that says so.
@@ -191,7 +230,7 @@ As a rough guide, a 128³ torus (55k triangles) takes about 0.2 s and a 256³ on
 npm install
 npm test            # headless WebGPU tests in Node (Dawn via the `webgpu` package)
 npm run test:types  # type-checks a consumer against the declarations
-npm run example     # serves the package; open http://localhost:8080/examples/ (shapes) or /examples/splines.html
+npm run example     # serves the package; open http://localhost:8080/examples/ (shapes), /examples/splines.html or /examples/density.html
 ```
 
 The tests run on a real WebGPU device. On machines without a GPU, install a software Vulkan driver, for example `apt install mesa-vulkan-drivers` on Debian or Ubuntu.

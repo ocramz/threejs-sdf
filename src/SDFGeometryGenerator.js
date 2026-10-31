@@ -12,13 +12,19 @@
  *
  * Usage:
  *
- *   import { Fn, length, vec2 } from 'three/tsl';
+ *   import { Fn, dot, exp, length, vec2 } from 'three/tsl';
  *   import { SDFGeometryGenerator } from 'three-sdf-geometry-generator';
  *
  *   const generator = new SDFGeometryGenerator( renderer ); // a WebGPURenderer
  *
  *   const torus = Fn( ( [ p ] ) => length( vec2( length( p.xz ).sub( 0.6 ), p.y ) ).sub( 0.2 ) );
  *   const geometry = await generator.generate( 128, torus, 1 );
+ *
+ * Any scalar field works, not just distances. For a density, pick the level and
+ * say that the inside is above it:
+ *
+ *   const blob = ( p ) => exp( dot( p, p ).mul( - 5 ) );
+ *   const geometry = await generator.generate( 128, blob, 1, { level: 0.5, inside: 'above' } );
  *
  * See README.md for the full API and the differences from the WebGL version.
  *
@@ -128,28 +134,36 @@ class SDFGeometryGenerator {
 	 * @param {number} [res=64]
 	 * @param {Function|string} [distFunc]
 	 * @param {number} [bounds=1]
+	 * @param {Object} [options]
 	 * @return {Promise<BufferGeometry>}
 	 */
-	generate( res, distFunc, bounds ) {
+	generate( res, distFunc, bounds, options ) {
 
-		return this.generateAsync( res, distFunc, bounds );
+		return this.generateAsync( res, distFunc, bounds, options );
 
 	}
 
 	/**
-	 * Samples the SDF on a grid of res x res x res cells spanning
-	 * [ -bounds, bounds ]^3 and returns the zero-level surface as geometry.
+	 * Samples the field on a grid of res x res x res cells spanning
+	 * [ -bounds, bounds ]^3 and returns the surface where it equals options.level
+	 * (by default the zero level of a signed distance function) as geometry.
 	 *
 	 * @param {number} [res=64] - Number of cells along each axis (integer >= 2).
 	 * @param {Function|string} [distFunc] - Either a TSL function receiving the sample
-	 * position (vec3 node) and returning the signed distance (float node), e.g.
+	 * position (vec3 node) and returning the field value (float node), e.g.
 	 * Fn( ( [ p ] ) => length( p ).sub( 0.5 ) ), or a WGSL string that defines
-	 * fn dist( p: vec3<f32> ) -> f32 (plus any helper functions it needs).
-	 * Negative values are inside. Defaults to a sphere of radius 0.5.
+	 * fn dist( p: vec3<f32> ) -> f32 or fn field( p: vec3<f32> ) -> f32 (plus any
+	 * helper functions it needs). Defaults to a sphere of radius 0.5.
 	 * @param {number} [bounds=1] - Half extent of the sampled cube, centered at the origin.
+	 * @param {Object} [options]
+	 * @param {number} [options.level=0] - Field value on the surface.
+	 * @param {string} [options.inside='below'] - 'below' if values under the level are
+	 * inside (signed distances), 'above' if values over it are inside (densities).
 	 * @return {Promise<BufferGeometry>} Indexed geometry with position and normal attributes.
 	 */
-	async generateAsync( res = 64, distFunc = _defaultDistance, bounds = 1 ) {
+	async generateAsync( res = 64, distFunc = _defaultDistance, bounds = 1, options = {} ) {
+
+		const { level = 0, inside = 'below' } = options;
 
 		if ( Number.isInteger( res ) === false || res < 2 ) {
 
@@ -160,6 +174,18 @@ class SDFGeometryGenerator {
 		if ( ! ( bounds > 0 ) ) {
 
 			throw new Error( 'THREE.SDFGeometryGenerator: bounds must be a positive number.' );
+
+		}
+
+		if ( Number.isFinite( level ) === false ) {
+
+			throw new Error( 'THREE.SDFGeometryGenerator: level must be a finite number.' );
+
+		}
+
+		if ( inside !== 'below' && inside !== 'above' ) {
+
+			throw new Error( 'THREE.SDFGeometryGenerator: inside must be \'below\' or \'above\'.' );
 
 		}
 
@@ -197,7 +223,11 @@ class SDFGeometryGenerator {
 			const z = instanceIndex.div( uint( sliceSize ) ).add( zOffset ).toVar();
 
 			const p = vec3( float( x ), float( y ), float( z ) ).mul( cellSize ).sub( bounds );
-			const d = float( distance( p ) ).toVar();
+
+			// Shift and orient the field so the surface is d = 0 and d < 0 is inside.
+
+			const value = float( distance( p ) );
+			const d = ( inside === 'above' ? float( level ).sub( value ) : value.sub( level ) ).toVar();
 
 			// Clamp the outer shell of samples to "outside" so shapes clipped by the bounds get capped.
 
@@ -267,7 +297,9 @@ class SDFGeometryGenerator {
 
 		if ( typeof distFunc === 'string' ) {
 
-			if ( /\bfn\s+dist\s*\(/.test( distFunc ) ) {
+			const name = /\bfn\s+dist\s*\(/.test( distFunc ) ? 'dist' : /\bfn\s+field\s*\(/.test( distFunc ) ? 'field' : null;
+
+			if ( name !== null ) {
 
 				if ( this.renderer.backend.isWebGPUBackend !== true ) {
 
@@ -277,19 +309,19 @@ class SDFGeometryGenerator {
 
 				// The user code goes in as an include so it may contain helper functions in any order.
 
-				const entry = wgslFn( 'fn sdfGeometryGeneratorDist( p: vec3<f32> ) -> f32 { return dist( p ); }', [ wgsl( distFunc ) ] );
+				const entry = wgslFn( `fn sdfGeometryGeneratorDist( p: vec3<f32> ) -> f32 { return ${ name }( p ); }`, [ wgsl( distFunc ) ] );
 
 				return ( p ) => entry( p );
 
 			}
 
-			if ( /\bfloat\s+dist\s*\(/.test( distFunc ) ) {
+			if ( /\bfloat\s+(dist|field)\s*\(/.test( distFunc ) ) {
 
 				throw new Error( 'THREE.SDFGeometryGenerator: GLSL distance functions are not supported with WebGPURenderer. Port it to TSL, or to WGSL as fn dist( p: vec3<f32> ) -> f32 { ... }.' );
 
 			}
 
-			throw new Error( 'THREE.SDFGeometryGenerator: The WGSL string must define fn dist( p: vec3<f32> ) -> f32.' );
+			throw new Error( 'THREE.SDFGeometryGenerator: The WGSL string must define fn dist( p: vec3<f32> ) -> f32 or fn field( p: vec3<f32> ) -> f32.' );
 
 		}
 
